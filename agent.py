@@ -67,7 +67,7 @@ def ask_llm(system_prompt, user_prompt, temperature=0.7):
 
 
 def _call_gemini(api_key, system_prompt, user_prompt, temperature):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={api_key}"
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"parts": [{"text": user_prompt}]}],
@@ -373,7 +373,7 @@ def main():
         print("❌ No LLM API key found!")
         print("   Set one of: GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY")
         sys.exit(1)
-    print(f"🤖 Using {api_name.upper()} API" + (" (gemini-2.5-flash free tier)" if api_name == "gemini" else ""))
+    print(f"🤖 Using {api_name.upper()} API" + (" (gemini-3-flash-preview free tier)" if api_name == "gemini" else ""))
 
     # Setup branch
     tag = args.tag or datetime.now().strftime("%b%d").lower()
