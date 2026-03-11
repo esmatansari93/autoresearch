@@ -38,14 +38,22 @@ class GPTConfig:
     n_kv_head: int = 6
     n_embd: int = 768
     window_pattern: str = "SSSL"
+    window_ratio: float = 0.5
+    softcap: float = 15.0
+    ve_pattern: str = "alternating"  # "alternating", "all", or "none"
 
 
 def norm(x):
     return F.rms_norm(x, (x.size(-1),))
 
 
-def has_ve(layer_idx, n_layer):
-    """Returns True if layer should have Value Embedding (alternating, last always included)."""
+def has_ve(layer_idx, n_layer, pattern="alternating"):
+    """Returns True if layer should have Value Embedding."""
+    if pattern == "none":
+        return False
+    if pattern == "all":
+        return True
+    # alternating (default): last layer always included
     return layer_idx % 2 == (n_layer - 1) % 2
 
 
@@ -72,7 +80,7 @@ class CausalSelfAttention(nn.Module):
         self.c_v = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.ve_gate_channels = 32
-        self.ve_gate = nn.Linear(self.ve_gate_channels, self.n_kv_head, bias=False) if has_ve(layer_idx, config.n_layer) else None
+        self.ve_gate = nn.Linear(self.ve_gate_channels, self.n_kv_head, bias=False) if has_ve(layer_idx, config.n_layer, config.ve_pattern) else None
 
     def forward(self, x, ve, cos_sin, window_size):
         B, T, C = x.size()
@@ -138,7 +146,7 @@ class GPT(nn.Module):
         kv_dim = config.n_kv_head * head_dim
         self.value_embeds = nn.ModuleDict({
             str(i): nn.Embedding(config.vocab_size, kv_dim)
-            for i in range(config.n_layer) if has_ve(i, config.n_layer)
+            for i in range(config.n_layer) if has_ve(i, config.n_layer, config.ve_pattern)
         })
         # Rotary embeddings
         self.rotary_seq_len = config.sequence_len * 10
@@ -196,7 +204,7 @@ class GPT(nn.Module):
         pattern = config.window_pattern.upper()
         assert all(c in "SL" for c in pattern)
         long_window = config.sequence_len
-        short_window = long_window // 2
+        short_window = int(long_window * config.window_ratio)
         char_to_window = {"L": (long_window, 0), "S": (short_window, 0)}
         window_sizes = []
         for layer_idx in range(config.n_layer):
@@ -279,10 +287,9 @@ class GPT(nn.Module):
             x = block(x, ve, cos_sin, self.window_sizes[i])
         x = norm(x)
 
-        softcap = 15
         logits = self.lm_head(x)
         logits = logits.float()
-        logits = softcap * torch.tanh(logits / softcap)
+        logits = self.config.softcap * torch.tanh(logits / self.config.softcap)
 
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1),
@@ -441,6 +448,7 @@ UNEMBEDDING_LR = 0.004  # learning rate for lm_head (Adam)
 MATRIX_LR = 0.04        # learning rate for matrix parameters (Muon)
 SCALAR_LR = 0.5         # learning rate for per-layer scalars (Adam)
 WEIGHT_DECAY = 0.2      # cautious weight decay for Muon
+GRAD_CLIP = 1.0         # max gradient norm (0.0 = disabled)
 ADAM_BETAS = (0.8, 0.95) # Adam beta1, beta2
 WARMUP_RATIO = 0.0      # fraction of time budget for LR warmup
 WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
@@ -561,13 +569,15 @@ while True:
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
             group["weight_decay"] = muon_weight_decay
+    if GRAD_CLIP > 0.0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
     optimizer.step()
     model.zero_grad(set_to_none=True)
 
     train_loss_f = train_loss.item()
 
     # Fast fail: abort if loss is exploding or NaN
-    if math.isnan(train_loss_f) or train_loss_f > 100:
+    if not math.isfinite(train_loss_f) or train_loss_f > 100:
         print("FAIL")
         exit(1)
 
@@ -604,6 +614,17 @@ while True:
         break
 
 print()  # newline after \r training log
+
+# Save checkpoint
+CHECKPOINT_DIR = os.path.join(os.path.expanduser("~"), ".cache", "autoresearch", "checkpoints")
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+ckpt_path = os.path.join(CHECKPOINT_DIR, "latest.pt")
+torch.save({
+    "model_state_dict": model.state_dict(),
+    "step": step,
+    "total_tokens": step * TOTAL_BATCH_SIZE,
+}, ckpt_path)
+print(f"Checkpoint saved to {ckpt_path}")
 
 total_tokens = step * TOTAL_BATCH_SIZE
 
