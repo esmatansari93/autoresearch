@@ -373,7 +373,7 @@ def main():
         print("❌ No LLM API key found!")
         print("   Set one of: GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY")
         sys.exit(1)
-    print(f"🤖 Using {api_name.upper()} API")
+    print(f"🤖 Using {api_name.upper()} API" + (" (gemini-2.5-flash free tier)" if api_name == "gemini" else ""))
 
     # Setup branch
     tag = args.tag or datetime.now().strftime("%b%d").lower()
